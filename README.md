@@ -4,6 +4,8 @@ A lightweight Cloudflare Worker that adds CORS headers to proxied requests. Chie
 
 LLM API calls (Anthropic / OpenAI) use Roam's own built-in CORS proxy automatically — this worker is only needed for Composio MCP.
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/mlava/roam-mcp-proxy)
+
 ---
 
 ## Prerequisites
@@ -30,8 +32,6 @@ wrangler login
 This opens a browser window to authorise Wrangler with your Cloudflare account.
 
 ### 3. Install dependencies
-
-From the `roam-mcp-proxy/` directory:
 
 ```bash
 npm install
@@ -182,21 +182,16 @@ The worker sets `redirect: "manual"` for upstream fetches and blocks redirects. 
 
 The proxy has two test suites:
 
-### Security tests (Node.js — no Workers runtime needed)
+All 85 tests run via vitest in the Cloudflare Workers test pool:
 
 ```bash
-node --test roam-mcp-proxy/test/security.test.mjs
+npx vitest run
 ```
 
-62 tests across 7 suites covering origin allowlist, target host allowlist, private IP detection, redirect status detection, local dev targets, CORS `getAllowedHeaders` validated echo, and CORS response headers. These re-declare the proxy's pure validation functions inline so they run in any Node 18+ environment.
+The test suite is split into two files:
 
-### Integration tests (Cloudflare Workers vitest pool)
-
-```bash
-cd roam-mcp-proxy && npx vitest run
-```
-
-These use `@cloudflare/vitest-pool-workers` to test the full worker `fetch()` handler with synthetic requests. Requires the Cloudflare test harness and `node_modules` installed for your platform.
+- **`test/security.test.mjs`** — Pure-logic unit tests covering origin allowlist, target host allowlist, private IP detection, redirect status detection, local dev targets, CORS `getAllowedHeaders` validated echo, and CORS response headers. These re-declare the proxy's validation functions inline.
+- **`test/index.spec.js`** — Integration tests using `@cloudflare/vitest-pool-workers` to test the full worker `fetch()` handler with synthetic requests.
 
 ---
 
