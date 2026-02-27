@@ -10,7 +10,7 @@
  *   or: npx vitest run roam-mcp-proxy/test/security.test.mjs  (from repo root)
  */
 
-import { describe, it } from "node:test";
+import { describe, it, expect } from "vitest";
 import assert from "node:assert/strict";
 
 // ── Inline the worker module so we don't need the Cloudflare test harness ──

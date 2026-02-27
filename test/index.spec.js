@@ -70,13 +70,24 @@ describe("Target host allowlist", () => {
   });
 
   it("allows localhost (http)", async () => {
-    const res = await fetchWorker(makeRequest("http://localhost:3000/test"));
-    expect(res.status).not.toBe(403);
+    // Localhost passes the allowlist but fetch may fail with a network error
+    // in the Workers test pool (nothing running on that port). Either outcome
+    // — a non-403 response or a network error — proves the allowlist allowed it.
+    try {
+      const res = await fetchWorker(makeRequest("http://localhost:3000/test"));
+      expect(res.status).not.toBe(403);
+    } catch (e) {
+      expect(e.message).toMatch(/network|connection|fetch/i);
+    }
   });
 
   it("allows 127.0.0.1 (http)", async () => {
-    const res = await fetchWorker(makeRequest("http://127.0.0.1:8080/test"));
-    expect(res.status).not.toBe(403);
+    try {
+      const res = await fetchWorker(makeRequest("http://127.0.0.1:8080/test"));
+      expect(res.status).not.toBe(403);
+    } catch (e) {
+      expect(e.message).toMatch(/network|connection|fetch/i);
+    }
   });
 
   it("blocks arbitrary external host", async () => {
@@ -97,14 +108,21 @@ describe("Target host allowlist", () => {
 
   it("blocks ftp:// protocol", async () => {
     const res = await fetchWorker(makeRequest("ftp://mcp.composio.dev/file"));
-    expect(res.status).toBe(403);
+    // ftp:// is caught by the !startsWith("http") guard before isTargetAllowed(),
+    // so the proxy returns 400 (bad request) rather than 403 (forbidden target).
+    expect(res.status).toBe(400);
   });
 
-  it("blocks https:// to localhost (must be http)", async () => {
-    // localhost over HTTPS is unusual and shouldn't be proxied
-    const res = await fetchWorker(makeRequest("https://localhost:3000/test"));
-    expect(res.status).not.toBe(403); // localhost IS in ALLOWED_TARGET_HOSTS, and https is a valid protocol
-    // Actually — the code allows https to any ALLOWED_TARGET_HOSTS. This is fine.
+  it("allows https:// to localhost (in ALLOWED_TARGET_HOSTS)", async () => {
+    // localhost IS in ALLOWED_TARGET_HOSTS and https is a valid protocol,
+    // so this passes the allowlist. Fetch may fail with a network error
+    // in the Workers test pool — that's fine, proves allowlist didn't block it.
+    try {
+      const res = await fetchWorker(makeRequest("https://localhost:3000/test"));
+      expect(res.status).not.toBe(403);
+    } catch (e) {
+      expect(e.message).toMatch(/network|connection|fetch/i);
+    }
   });
 
   it("blocks http:// to non-local host (Composio must be https)", async () => {
