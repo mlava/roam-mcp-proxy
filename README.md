@@ -130,6 +130,8 @@ const ALLOWED_TARGET_HOSTS = new Set([
 ]);
 ```
 
+If you enable [Web Page Fetching](https://github.com/mlava/chief-of-staff#5-web-page-fetching-optional) in Chief of Staff, you'll need to add `"api.cloudflare.com"` to `ALLOWED_TARGET_HOSTS` and redeploy.
+
 To allow additional origins (e.g. a local dev server), edit the `ALLOWED_ORIGINS` array at the top of `src/index.js`:
 
 ```js
