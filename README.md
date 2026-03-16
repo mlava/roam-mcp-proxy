@@ -59,7 +59,7 @@ Copy this URL — you'll need it when configuring Chief of Staff.
 In **Roam → Settings → Chief of Staff**, set **Composio MCP URL** to your worker URL with the real Composio MCP endpoint appended as the path:
 
 ```
-https://roam-mcp-proxy.<your-subdomain>.workers.dev/https://mcp.composio.dev/<your-composio-endpoint>
+https://roam-mcp-proxy.<your-subdomain>.workers.dev/
 ```
 
 The worker strips the leading `/`, forwards the request to the target URL, and adds CORS headers to the response.
@@ -86,7 +86,7 @@ For every incoming request:
 npm run dev
 ```
 
-This starts a local dev server (typically `http://localhost:8787`). You can point your Composio MCP URL at `http://localhost:8787/https://mcp.composio.dev/...` for testing.
+This starts a local dev server (typically `http://localhost:8787`). You can point your Composio MCP URL at `http://localhost:8787/` for testing.
 
 ---
 
