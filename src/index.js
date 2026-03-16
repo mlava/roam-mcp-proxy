@@ -8,6 +8,7 @@ const ALLOWED_ORIGINS = [
 const ALLOWED_TARGET_HOSTS = new Set([
   "mcp.composio.dev",
   "backend.composio.dev",
+  "api.cloudflare.com",
   "localhost",
   "127.0.0.1",
 ]);
