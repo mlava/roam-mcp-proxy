@@ -25,11 +25,15 @@ const ALLOWED_ORIGINS = [
   "https://www.roamresearch.com",
 ];
 
-const ALLOWED_TARGET_HOSTS = new Set([
-  "mcp.composio.dev",
-  "backend.composio.dev",
-  "localhost",
-  "127.0.0.1",
+// Mirrors ALLOWED_TARGETS in src/index.js — host → path pattern (null = any path).
+// Keep in sync: this file re-declares the validation logic rather than importing it.
+const ALLOWED_TARGETS = new Map([
+  ["mcp.composio.dev", null],
+  ["backend.composio.dev", null],
+  ["chatgpt.com", /^\/backend-api\/codex\//],
+  ["api.cloudflare.com", /^\/client\/v4\/accounts\/[^/]+\/browser-rendering\//],
+  ["localhost", null],
+  ["127.0.0.1", null],
 ]);
 
 function normaliseOrigin(originValue) {
@@ -65,8 +69,14 @@ function isTargetAllowed(targetUrl) {
     const protocol = url.protocol.toLowerCase();
     const hostname = url.hostname.toLowerCase();
     if (!["https:", "http:"].includes(protocol)) return false;
-    if (!ALLOWED_TARGET_HOSTS.has(hostname) && !isPrivateIpv4Host(hostname)) return false;
-    if (protocol === "http:" && !(hostname === "localhost" || isPrivateIpv4Host(hostname))) return false;
+
+    const isLocal = isPrivateIpv4Host(hostname);
+    if (!ALLOWED_TARGETS.has(hostname) && !isLocal) return false;
+    if (protocol === "http:" && !(hostname === "localhost" || isLocal)) return false;
+
+    const pathPattern = ALLOWED_TARGETS.get(hostname);
+    if (pathPattern && !pathPattern.test(url.pathname)) return false;
+
     return true;
   } catch {
     return false;
@@ -180,6 +190,28 @@ describe("Target host allowlist", () => {
   it("blocks malformed URL", () => {
     assert.ok(!isTargetAllowed("not a url"));
     assert.ok(!isTargetAllowed(""));
+  });
+
+  // Hosts reached with a user credential are locked to the one sub-API we call,
+  // so a token in flight can't be aimed at anything else on that host.
+  it("allows chatgpt.com only on the Codex API path", () => {
+    assert.ok(isTargetAllowed("https://chatgpt.com/backend-api/codex/responses"));
+    assert.ok(!isTargetAllowed("https://chatgpt.com/backend-api/conversations"));
+    assert.ok(!isTargetAllowed("https://chatgpt.com/"));
+    assert.ok(!isTargetAllowed("https://chatgpt.com/backend-api/accounts/check"));
+  });
+
+  it("allows api.cloudflare.com only on the browser-rendering path", () => {
+    assert.ok(isTargetAllowed("https://api.cloudflare.com/client/v4/accounts/abc/browser-rendering/markdown"));
+    assert.ok(!isTargetAllowed("https://api.cloudflare.com/client/v4/accounts/abc/workers/scripts"));
+    assert.ok(!isTargetAllowed("https://api.cloudflare.com/client/v4/zones"));
+  });
+
+  it("still blocks general LLM API traffic", () => {
+    // chatgpt.com is a narrow exception for the Codex 60s ceiling — it is NOT a
+    // decision to route LLM API calls through this proxy in general.
+    assert.ok(!isTargetAllowed("https://api.openai.com/v1/chat/completions"));
+    assert.ok(!isTargetAllowed("https://api.anthropic.com/v1/messages"));
   });
 });
 

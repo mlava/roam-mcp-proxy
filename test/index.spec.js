@@ -132,6 +132,99 @@ describe("Target host allowlist", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2b. Credential-bearing targets are path-locked
+// ---------------------------------------------------------------------------
+
+describe("Path-locked targets", () => {
+  // A request that clears the allowlist still reaches the real upstream, which
+  // may answer 401/403/405 to an unauthenticated probe (chatgpt.com answers 403)
+  // or fail to connect in the test pool. So status alone cannot tell "we blocked
+  // it" from "upstream rejected it" — the "Forbidden target" body is the only
+  // reliable marker of a block by this proxy.
+  async function expectAllowed(targetUrl) {
+    try {
+      const res = await fetchWorker(makeRequest(targetUrl, { method: "POST" }));
+      expect(await res.text()).not.toBe("Forbidden target");
+    } catch (e) {
+      expect(e.message).toMatch(/network|connection|fetch/i);
+    }
+  }
+
+  it("allows chatgpt.com on the Codex API path", async () => {
+    await expectAllowed("https://chatgpt.com/backend-api/codex/responses");
+  });
+
+  it("blocks chatgpt.com outside the Codex API path", async () => {
+    // A ChatGPT access token in flight must not be aimable at the rest of the
+    // backend API (conversations, account, billing).
+    const res = await fetchWorker(makeRequest("https://chatgpt.com/backend-api/conversations", { method: "POST" }));
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe("Forbidden target");
+  });
+
+  it("blocks the chatgpt.com root", async () => {
+    const res = await fetchWorker(makeRequest("https://chatgpt.com/"));
+    expect(res.status).toBe(403);
+  });
+
+  it("allows api.cloudflare.com on the browser-rendering path", async () => {
+    await expectAllowed("https://api.cloudflare.com/client/v4/accounts/abc123/browser-rendering/markdown");
+  });
+
+  it("blocks api.cloudflare.com outside browser-rendering", async () => {
+    // The user's Cloudflare API token must not be usable against the rest of
+    // their account (zones, DNS, workers).
+    const res = await fetchWorker(makeRequest("https://api.cloudflare.com/client/v4/accounts/abc123/workers/scripts", { method: "POST" }));
+    expect(res.status).toBe(403);
+  });
+
+  it("still blocks api.openai.com (general LLM traffic does not belong here)", async () => {
+    // chatgpt.com is a narrow exception for the Codex 60s ceiling, NOT a
+    // decision to route LLM API traffic through this proxy generally.
+    const res = await fetchWorker(makeRequest("https://api.openai.com/v1/chat/completions", { method: "POST" }));
+    expect(res.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2c. Capability probe
+// ---------------------------------------------------------------------------
+
+describe("GET /__capabilities", () => {
+  it("reports version and allowed targets", async () => {
+    const req = new Request("https://proxy.test/__capabilities", {
+      headers: { Origin: "https://roamresearch.com" },
+    });
+    const res = await fetchWorker(req);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.version).toBeGreaterThanOrEqual(2);
+    expect(body.targets).toContain("chatgpt.com");
+    expect(body.targets).toContain("api.cloudflare.com");
+    expect(body.targets).toContain("mcp.composio.dev");
+  });
+
+  it("is readable cross-origin (CORS headers present)", async () => {
+    // Without these the caller's fetch throws and it cannot tell a current
+    // proxy apart from an outdated one.
+    const req = new Request("https://proxy.test/__capabilities", {
+      headers: { Origin: "https://roamresearch.com" },
+    });
+    const res = await fetchWorker(req);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://roamresearch.com");
+  });
+
+  it("is not reachable from a foreign origin", async () => {
+    const req = new Request("https://proxy.test/__capabilities", {
+      headers: { Origin: "https://evil.com" },
+    });
+    const res = await fetchWorker(req);
+    expect(res.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 3. Redirect blocking (SSRF defence)
 // ---------------------------------------------------------------------------
 
@@ -190,6 +283,32 @@ describe("CORS headers", () => {
     const res = await fetchWorker(makeRequest("https://evil.com/steal"));
     expect(res.status).toBe(403);
     expect(res.headers.get("Access-Control-Allow-Origin")).toBeTruthy();
+  });
+
+  it("400 responses include CORS headers", async () => {
+    // Without CORS headers the browser reports an opaque CORS failure instead
+    // of the actual reason, which is indistinguishable from the proxy being down.
+    const req = new Request("https://proxy.test/not-a-url", {
+      headers: { Origin: "https://roamresearch.com" },
+    });
+    const res = await fetchWorker(req);
+    expect(res.status).toBe(400);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeTruthy();
+  });
+
+  it("preflight allows the Codex headers", async () => {
+    const req = new Request("https://proxy.test/https://chatgpt.com/backend-api/codex/responses", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://roamresearch.com",
+        "Access-Control-Request-Headers": "authorization, chatgpt-account-id, openai-beta, originator",
+      },
+    });
+    const res = await fetchWorker(req);
+    const allowed = res.headers.get("Access-Control-Allow-Headers") || "";
+    expect(allowed).toContain("chatgpt-account-id");
+    expect(allowed).toContain("openai-beta");
+    expect(allowed).toContain("originator");
   });
 });
 
