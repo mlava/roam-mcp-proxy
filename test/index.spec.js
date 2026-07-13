@@ -150,21 +150,11 @@ describe("Path-locked targets", () => {
     }
   }
 
-  it("allows chatgpt.com on the Codex API path", async () => {
-    await expectAllowed("https://chatgpt.com/backend-api/codex/responses");
-  });
-
-  it("blocks chatgpt.com outside the Codex API path", async () => {
-    // A ChatGPT access token in flight must not be aimable at the rest of the
-    // backend API (conversations, account, billing).
-    const res = await fetchWorker(makeRequest("https://chatgpt.com/backend-api/conversations", { method: "POST" }));
+  it("blocks chatgpt.com — a Worker cannot proxy it (Cf-Worker header → OpenAI WAF 403)", async () => {
+    // Not an oversight. See the comment on ALLOWED_TARGETS in src/index.js.
+    const res = await fetchWorker(makeRequest("https://chatgpt.com/backend-api/codex/responses", { method: "POST" }));
     expect(res.status).toBe(403);
     expect(await res.text()).toBe("Forbidden target");
-  });
-
-  it("blocks the chatgpt.com root", async () => {
-    const res = await fetchWorker(makeRequest("https://chatgpt.com/"));
-    expect(res.status).toBe(403);
   });
 
   it("allows api.cloudflare.com on the browser-rendering path", async () => {
@@ -178,9 +168,7 @@ describe("Path-locked targets", () => {
     expect(res.status).toBe(403);
   });
 
-  it("still blocks api.openai.com (general LLM traffic does not belong here)", async () => {
-    // chatgpt.com is a narrow exception for the Codex 60s ceiling, NOT a
-    // decision to route LLM API traffic through this proxy generally.
+  it("still blocks api.openai.com (LLM traffic does not belong here)", async () => {
     const res = await fetchWorker(makeRequest("https://api.openai.com/v1/chat/completions", { method: "POST" }));
     expect(res.status).toBe(403);
   });
@@ -200,8 +188,8 @@ describe("GET /__capabilities", () => {
 
     const body = await res.json();
     expect(body.version).toBeGreaterThanOrEqual(2);
-    expect(body.targets).toContain("chatgpt.com");
     expect(body.targets).toContain("api.cloudflare.com");
+    expect(body.targets).not.toContain("chatgpt.com");
     expect(body.targets).toContain("mcp.composio.dev");
   });
 
@@ -296,20 +284,6 @@ describe("CORS headers", () => {
     expect(res.headers.get("Access-Control-Allow-Origin")).toBeTruthy();
   });
 
-  it("preflight allows the Codex headers", async () => {
-    const req = new Request("https://proxy.test/https://chatgpt.com/backend-api/codex/responses", {
-      method: "OPTIONS",
-      headers: {
-        Origin: "https://roamresearch.com",
-        "Access-Control-Request-Headers": "authorization, chatgpt-account-id, openai-beta, originator",
-      },
-    });
-    const res = await fetchWorker(req);
-    const allowed = res.headers.get("Access-Control-Allow-Headers") || "";
-    expect(allowed).toContain("chatgpt-account-id");
-    expect(allowed).toContain("openai-beta");
-    expect(allowed).toContain("originator");
-  });
 });
 
 // ---------------------------------------------------------------------------

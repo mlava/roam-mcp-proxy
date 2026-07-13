@@ -1,18 +1,19 @@
 # roam-mcp-proxy
 
-A lightweight Cloudflare Worker that adds CORS headers to proxied requests, for use with [Chief of Staff](https://github.com/mlava/chief-of-staff). Browser security policy blocks cross-origin requests from the Roam Research SPA to endpoints that don't return CORS headers, and some upstreams need more time than Roam's shared proxy allows.
+A lightweight Cloudflare Worker that adds CORS headers to proxied requests, for use with [Chief of Staff](https://github.com/mlava/chief-of-staff). Browser security policy blocks cross-origin requests from the Roam Research SPA to endpoints that don't return CORS headers.
 
-**One deployment serves three uses:**
+**One deployment serves two uses:**
 
 | Use | Why it needs this worker |
 |---|---|
 | **Composio MCP** | Composio's MCP endpoint returns no CORS headers. |
 | **Web page fetching** (`roam_web_fetch`) | Cloudflare's Browser Rendering API is not callable cross-origin from Roam. |
-| **Long ChatGPT-subscription (Codex) runs** | Roam's built-in CORS proxy is a cloud function that times out at ~60s, killing long generations. Cloudflare Workers are CPU-time limited rather than wall-clock limited and stream responses straight through, so there is no ceiling. |
 
-Ordinary LLM API calls (Anthropic, OpenAI, Gemini, …) use Roam's own built-in CORS proxy and do **not** go through this worker.
+LLM API calls (Anthropic, OpenAI, Gemini, …) use Roam's own built-in CORS proxy and do **not** go through this worker.
 
-> **Already deployed this worker?** Support for ChatGPT-subscription runs and web fetching landed in **v2**. Redeploy (`npx wrangler deploy`) to pick them up — your worker URL doesn't change, and Chief of Staff re-detects the new capabilities automatically. Chief of Staff will keep working against an older deployment; it simply routes Codex through Roam's proxy instead, with the ~60s limit.
+> **Already deployed this worker?** Built-in support for web page fetching landed in **v2** (`api.cloudflare.com` is allowlisted out of the box, path-locked to the Browser Rendering API). Redeploy (`npx wrangler deploy`) to pick it up — your worker URL doesn't change and no settings need updating.
+
+> **Why not ChatGPT-subscription (Codex) traffic?** It was attempted and it cannot work. Cloudflare's runtime stamps a `Cf-Worker` header onto every subrequest a Worker makes, *after* user code runs, so it cannot be stripped. OpenAI's WAF blocks any request carrying it (403 HTML block page). Verified by bisection: an otherwise identical `curl` to the Codex endpoint returns 401 — and returns 403 the instant `Cf-Worker` is added by hand. No Cloudflare Worker can proxy `chatgpt.com`, so the ~60s Codex ceiling (Roam's proxy timeout) needs a proxy on a *non-Cloudflare* platform, not this one.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/mlava/roam-mcp-proxy)
 
@@ -72,17 +73,23 @@ In **Roam → Settings → Chief of Staff → Show Integration Settings**, set *
 https://roam-mcp-proxy.<your-subdomain>.workers.dev
 ```
 
-That single setting covers all three uses. Chief of Staff appends the real target URL as the path; the worker strips the leading `/`, forwards the request to that target, and adds CORS headers to the response.
+That single setting covers both uses. Chief of Staff appends the real target URL as the path; the worker strips the leading `/`, forwards the request to that target, and adds CORS headers to the response.
 
 ### Capability detection
 
-Chief of Staff calls `GET /__capabilities` on your worker and caches the answer:
+The worker reports its version and allowed targets at `GET /__capabilities`:
 
 ```json
-{ "version": 2, "targets": ["mcp.composio.dev", "backend.composio.dev", "chatgpt.com", "api.cloudflare.com", "localhost", "127.0.0.1"] }
+{ "version": 2, "targets": ["mcp.composio.dev", "backend.composio.dev", "api.cloudflare.com", "localhost", "127.0.0.1"] }
 ```
 
-It uses this to decide what your deployment can actually carry. A worker deployed before v2 has no such route, so the probe fails and Chief of Staff keeps routing Codex through Roam's proxy rather than sending it to a worker that would reject it — an older deployment degrades, it doesn't break. Redeploy and the next probe picks it up.
+Use it to check what your deployment supports without digging through the dashboard:
+
+```bash
+curl -s -H "Origin: https://roamresearch.com" https://roam-mcp-proxy.<you>.workers.dev/__capabilities
+```
+
+If that returns `Usage: /<target-url>` instead of JSON, you are running a pre-v2 worker — redeploy.
 
 ---
 
@@ -92,12 +99,12 @@ For every incoming request:
 
 1. **Origin check** — rejects requests whose `Origin` header is not an exact match for an allowlisted Roam origin (`https://roamresearch.com` or `https://www.roamresearch.com`).
 2. **OPTIONS** (CORS preflight) — returns CORS headers with validated `Access-Control-Allow-Headers` (echoes back only headers from the static allowlist plus `mcp-*` and `x-composio-*` prefixes — no wildcard `*`). Methods restricted to `GET, POST, OPTIONS`.
-3. **`GET /__capabilities`** — returns the worker's version and allowed target hosts, so Chief of Staff can tell what this deployment supports.
+3. **`GET /__capabilities`** — returns the worker's version and allowed target hosts, so you can check what a deployment supports.
 4. **GET to `/tool_router/`** — returns `204 No Content`. Composio's MCP endpoint returns `405` for SSE probe GETs, which causes noisy browser console errors. The proxy intercepts these silently.
 5. **Target allowlist check** — only proxies to allowlisted upstream hosts, and for hosts that carry a user credential, only on a specific path (see Security below).
 6. **Redirect hardening** — upstream redirects are blocked (the worker does not follow redirects).
 7. **CORS response headers** — all responses, *including errors*, include `Vary: Origin` for correct cache behaviour, origin-specific `Access-Control-Allow-Origin` (no wildcard), and validated `Access-Control-Allow-Headers`. Error responses carry them too, so the browser shows the real reason instead of an opaque CORS failure.
-8. **Everything else** — forwards the request (method, allowlisted headers, body) to the target URL extracted from the path, then streams the response back with CORS headers added. Response bodies stream rather than buffer, so SSE (and long Codex generations) pass straight through.
+8. **Everything else** — forwards the request (method, allowlisted headers, body) to the target URL extracted from the path, then streams the response back with CORS headers added. Response bodies stream rather than buffer, so SSE passes straight through.
 
 ---
 
@@ -124,20 +131,19 @@ The proxy applies multiple layers of security:
    |---|---|
    | `mcp.composio.dev` | any (Composio MCP hostname) |
    | `backend.composio.dev` | any (Composio streamable HTTP / tool router hostname) |
-   | `chatgpt.com` | **only** `/backend-api/codex/…` |
    | `api.cloudflare.com` | **only** `/client/v4/accounts/<id>/browser-rendering/…` |
    | `localhost`, `127.0.0.1`, private IPv4 | any (local development) |
 
 Requests to any other target host — or to an allowed host on a disallowed path — are rejected with `403 Forbidden target`.
 
-**Why the two path locks.** Those requests carry a user credential: a ChatGPT access token, and a Cloudflare API token. Allowing the whole host would mean a bug or a malicious page that got a request through the origin check could aim that token at anything on it — the rest of ChatGPT's backend API (conversations, account, billing), or the rest of your Cloudflare account (zones, DNS, Workers). Locking each host to the single sub-API Chief of Staff actually calls means a token in flight is only ever usable for the thing it was sent for.
+**Why the path lock on `api.cloudflare.com`.** That request carries your Cloudflare API token. Allowing the whole host would mean a bug — or a malicious page that got a request past the origin check — could aim that token at the rest of your Cloudflare account (zones, DNS, Workers). Locking it to the one sub-API Chief of Staff actually calls means the token is only ever usable for the thing it was sent for.
 
-Note that general LLM API traffic (`api.openai.com`, `api.anthropic.com`, …) remains blocked. `chatgpt.com` is a narrow exception made necessary by the ~60s timeout on Roam's proxy — not a decision to route LLM calls through this worker.
+LLM API traffic (`api.openai.com`, `api.anthropic.com`, `chatgpt.com`, …) is blocked and stays blocked.
 
 3. **CORS hardening**:
    - `Vary: Origin` header on all responses (correct cache behaviour when serving multiple origins)
    - Methods restricted to `GET, POST, OPTIONS` only (no PUT, DELETE, PATCH)
-   - `Access-Control-Allow-Headers` uses a validated echo approach: the browser's `Access-Control-Request-Headers` are checked against a static allowlist (`accept`, `authorization`, `cache-control`, `content-type`, `last-event-id`, `pragma`, `x-api-key`, plus the Codex headers `chatgpt-account-id`, `openai-beta`, `originator`) and the `mcp-*` / `x-composio-*` prefix patterns. Disallowed headers are silently dropped. No wildcard `*`.
+   - `Access-Control-Allow-Headers` uses a validated echo approach: the browser's `Access-Control-Request-Headers` are checked against a static allowlist (`accept`, `authorization`, `cache-control`, `content-type`, `last-event-id`, `pragma`, `x-api-key`) plus the `mcp-*` / `x-composio-*` prefix patterns. Disallowed headers are silently dropped. No wildcard `*`.
    - `Access-Control-Max-Age: 86400` reduces preflight round-trips
 
 4. **Redirect blocking** — upstream redirects are intercepted (`redirect: "manual"`) and return `502` to prevent SSRF via redirect chains
@@ -155,7 +161,6 @@ const ALLOWED_TARGETS = new Map([
   ["mcp.composio.dev", null],
   ["backend.composio.dev", null],
   ["my-custom-composio-host.example.com", null],
-  ["chatgpt.com", /^\/backend-api\/codex\//],
   ["api.cloudflare.com", /^\/client\/v4\/accounts\/[^/]+\/browser-rendering\//],
   ["localhost", null],
   ["127.0.0.1", null],
@@ -216,7 +221,7 @@ The worker sets `redirect: "manual"` for upstream fetches and blocks redirects. 
 
 The proxy has two test suites:
 
-All 99 tests run via vitest in the Cloudflare Workers test pool:
+All 96 tests run via vitest in the Cloudflare Workers test pool:
 
 ```bash
 npx vitest run

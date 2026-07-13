@@ -30,7 +30,6 @@ const ALLOWED_ORIGINS = [
 const ALLOWED_TARGETS = new Map([
   ["mcp.composio.dev", null],
   ["backend.composio.dev", null],
-  ["chatgpt.com", /^\/backend-api\/codex\//],
   ["api.cloudflare.com", /^\/client\/v4\/accounts\/[^/]+\/browser-rendering\//],
   ["localhost", null],
   ["127.0.0.1", null],
@@ -194,11 +193,10 @@ describe("Target host allowlist", () => {
 
   // Hosts reached with a user credential are locked to the one sub-API we call,
   // so a token in flight can't be aimed at anything else on that host.
-  it("allows chatgpt.com only on the Codex API path", () => {
-    assert.ok(isTargetAllowed("https://chatgpt.com/backend-api/codex/responses"));
-    assert.ok(!isTargetAllowed("https://chatgpt.com/backend-api/conversations"));
-    assert.ok(!isTargetAllowed("https://chatgpt.com/"));
-    assert.ok(!isTargetAllowed("https://chatgpt.com/backend-api/accounts/check"));
+  it("blocks chatgpt.com entirely — Workers cannot proxy it", () => {
+    // The Cf-Worker header the runtime adds to every subrequest trips OpenAI's
+    // WAF (403). Cannot be stripped from user code. See src/index.js.
+    assert.ok(!isTargetAllowed("https://chatgpt.com/backend-api/codex/responses"));
   });
 
   it("allows api.cloudflare.com only on the browser-rendering path", () => {
@@ -208,8 +206,6 @@ describe("Target host allowlist", () => {
   });
 
   it("still blocks general LLM API traffic", () => {
-    // chatgpt.com is a narrow exception for the Codex 60s ceiling — it is NOT a
-    // decision to route LLM API calls through this proxy in general.
     assert.ok(!isTargetAllowed("https://api.openai.com/v1/chat/completions"));
     assert.ok(!isTargetAllowed("https://api.anthropic.com/v1/messages"));
   });

@@ -12,20 +12,20 @@ const ALLOWED_ORIGINS = [
 // each is restricted to (null = any path). This worker fronts specific Chief of
 // Staff integrations — it is NOT a general CORS proxy, and general LLM API
 // traffic (api.openai.com, api.anthropic.com, ...) must never pass through it.
+//
+// DO NOT ADD chatgpt.com. It cannot work, and the failure looks like a bug in
+// your code rather than a wall. Cloudflare's runtime stamps a `Cf-Worker` header
+// onto every subrequest a Worker makes; it is added AFTER user code, so
+// headers.delete("cf-worker") does nothing. OpenAI's WAF blocks any request
+// carrying that header, returning a 403 HTML block page. Verified by bisection
+// on 2026-07-13: an otherwise identical curl returns 401 (auth checked, request
+// well-formed) and returns 403 the moment `Cf-Worker` is added by hand. This is
+// why the ~60s Codex ceiling (Roam's proxy timeout) cannot be solved with this
+// worker — a fix needs a proxy on a non-Cloudflare platform.
 const ALLOWED_TARGETS = new Map([
   // Composio MCP.
   ["mcp.composio.dev", null],
   ["backend.composio.dev", null],
-
-  // ChatGPT-subscription (Codex) Responses API. A deliberate, narrow exception
-  // to the no-LLM-traffic rule above: Roam's built-in CORS proxy is a cloud
-  // function with a 60s timeout, so it kills any Codex generation longer than
-  // that (heavy skill runs, reliably). Cloudflare Workers are CPU-time limited
-  // rather than wall-clock limited and stream SSE straight through, so routing
-  // Codex here removes the ceiling. Path-locked to the Codex API so a ChatGPT
-  // access token passing through cannot be replayed against the rest of
-  // chatgpt.com (conversations, account, billing).
-  ["chatgpt.com", /^\/backend-api\/codex\//],
 
   // Cloudflare Browser Rendering, for Chief of Staff's roam_web_fetch tool.
   // Path-locked to the browser-rendering sub-API so the user's Cloudflare API
@@ -97,11 +97,6 @@ function buildUpstreamHeaders(request, targetUrl) {
     "last-event-id",
     "pragma",
     "x-api-key",
-    // Codex Responses API (ChatGPT subscription) — the upstream rejects the
-    // request without all three.
-    "chatgpt-account-id",
-    "openai-beta",
-    "originator",
   ]);
 
   // Allow a narrow set of headers plus MCP-/Composio-specific prefixes.
@@ -120,6 +115,7 @@ function buildUpstreamHeaders(request, targetUrl) {
   try {
     headers.set("origin", new URL(targetUrl).origin);
   } catch { /* ignore */ }
+
   return headers;
 }
 
@@ -131,7 +127,6 @@ function isRedirectStatus(status) {
 const CORS_ALLOWED_HEADERS = [
   "accept", "authorization", "cache-control", "content-type",
   "last-event-id", "pragma", "x-api-key",
-  "chatgpt-account-id", "openai-beta", "originator",
 ];
 // Dynamic prefix patterns — any header matching these is also allowed.
 const CORS_ALLOWED_HEADER_PREFIXES = ["mcp-", "x-composio-"];
